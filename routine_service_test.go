@@ -16,7 +16,6 @@ func TestRoutineService(t *testing.T) {
 	}).Get())
 
 	assert.Nil(t, rs.Execute(func() {}).Get())
-	time.Sleep(time.Millisecond)
 	assert.False(t, rs.IsShutdown())
 	rs.ShutdownGracefully()
 	assert.Panics(t, rs.ShutdownGracefully)
@@ -30,7 +29,7 @@ func TestRoutineServiceSubmitGracefully(t *testing.T) {
 	for i := 0; i < tick; i++ {
 		wg.Add(1)
 		go func() {
-			rs := NewRoutinePool(3, 1)
+			rs := NewBlockingRoutinePool(3, 1)
 			c := int32(0)
 			for i := 0; i < 10000; i++ {
 				rs.Submit(func() interface{} {
@@ -60,7 +59,7 @@ func TestRoutineServiceSubmitGracefully(t *testing.T) {
 }
 
 func TestRoutineServiceSubmitGracefullyF(t *testing.T) {
-	rs := NewRoutinePool(100, 1)
+	rs := NewBlockingRoutinePool(100, 1)
 	tc := 10000
 	c := int32(0)
 	cc := int32(0)
@@ -96,7 +95,7 @@ func TestRoutineServiceSubmitImmediately(t *testing.T) {
 	for i := 0; i < tick; i++ {
 		wg.Add(1)
 		go func() {
-			rs := NewRoutinePool(3, 1)
+			rs := NewBlockingRoutinePool(3, 1)
 			c := int32(0)
 			go func() {
 				time.Sleep(time.Microsecond)
@@ -124,7 +123,7 @@ func TestRoutineServiceSubmitImmediately10000(t *testing.T) {
 	for i := 0; i < tick; i++ {
 		wg.Add(1)
 		go func() {
-			rs := NewRoutinePool(3, 10000)
+			rs := NewBlockingRoutinePool(3, 10000)
 			c := int32(0)
 
 			for i := 0; i < 10000; i++ {
@@ -149,7 +148,7 @@ func TestRoutineServiceSubmitImmediatelyUnLimit(t *testing.T) {
 	for i := 0; i < tick; i++ {
 		wg.Add(1)
 		go func() {
-			rs := NewRoutinePool(3, -1)
+			rs := NewBlockingRoutinePool(3, -1)
 			c := int32(0)
 
 			for i := 0; i < 10000; i++ {

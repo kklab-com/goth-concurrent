@@ -14,7 +14,9 @@ const (
 	gorShutdown
 )
 
-var ErrShutdownTwice = fmt.Errorf("shutdown a shutdown routine service")
+var ErrShutdownTwice = fmt.Errorf("shutdown a shutdown rs service")
+var ErrTaskQueueFull = fmt.Errorf("task queue is full")
+var ErrShutdown = fmt.Errorf("shutdown")
 
 type RoutineService interface {
 	Submit(func() interface{}) Future
@@ -29,17 +31,17 @@ type RoutineService interface {
 	ShutdownImmediately()
 }
 
-type routineWorker struct {
-	routine  *routine
+type routine struct {
+	rs       *routines
 	shutdown Future
 	state    int
 	n        int
 }
 
-func (r *routineWorker) run() {
-	go func(r *routineWorker) {
+func (r *routine) run() {
+	go func(r *routine) {
 		for !r.shutdown.IsDone() {
-			if v := r.routine.tq.Pop(); v == nil {
+			if v := r.rs.tq.Pop(); v == nil {
 				select {
 				case <-r.shutdown.Done():
 					break
@@ -47,11 +49,11 @@ func (r *routineWorker) run() {
 			} else {
 				rt := v.(*routineTask)
 				r.state = gorRun
-				atomic.AddInt32(&r.routine.standbyRoutines, 1)
+				atomic.AddInt32(&r.rs.standbyRoutines, 1)
 				rt.t()
 				r.state = gorDone
-				atomic.AddInt32(&r.routine.standbyRoutines, -1)
-				atomic.AddUint64(&r.routine.doneTasks, 1)
+				atomic.AddInt32(&r.rs.standbyRoutines, -1)
+				atomic.AddUint64(&r.rs.doneTasks, 1)
 			}
 
 			r.state = gorWait
@@ -66,37 +68,38 @@ type routineTask struct {
 	t func()
 }
 
-type routine struct {
+type routines struct {
+	blocking        bool
 	state           int32
 	maxRoutines     int
 	standbyRoutines int32
 	maxQueuedTasks  int
 	doneTasks       uint64
 	tq              BlockingQueue
-	routineSlots    map[int]*routineWorker
+	routineSlots    map[int]*routine
 }
 
-func (r *routine) MaxRoutines() int {
+func (r *routines) MaxRoutines() int {
 	return r.maxRoutines
 }
 
-func (r *routine) StandbyRoutines() int {
+func (r *routines) StandbyRoutines() int {
 	return int(r.standbyRoutines)
 }
 
-func (r *routine) MaxTasks() int {
+func (r *routines) MaxTasks() int {
 	return r.maxQueuedTasks
 }
 
-func (r *routine) Tasks() int {
+func (r *routines) Tasks() int {
 	return r.tq.Len()
 }
 
-func (r *routine) DoneTasks() uint64 {
+func (r *routines) DoneTasks() uint64 {
 	return r.doneTasks
 }
 
-func (r *routine) buildTask(submit func() interface{}, execute func()) (Future, func()) {
+func (r *routines) buildTask(submit func() interface{}, execute func()) (Future, func()) {
 	sf := submit
 	ef := execute
 	rf := NewFuture()
@@ -125,11 +128,17 @@ func (r *routine) buildTask(submit func() interface{}, execute func()) (Future, 
 	return rf, task
 }
 
-func (r *routine) pushTask(rf Future, task func()) *routineTask {
+func (r *routines) pushTask(rf Future, task func()) *routineTask {
 	if r.maxQueuedTasks >= 0 {
 		for r.tq.Len()-int(r.standbyRoutines) > r.maxQueuedTasks {
-			if atomic.LoadInt32(&r.state) != gorRun {
-				rf.Completable().Cancel()
+			if !r.blocking {
+				rf.Completable().Fail(ErrTaskQueueFull)
+				return &routineTask{
+					f: rf,
+					t: task,
+				}
+			} else if atomic.LoadInt32(&r.state) != gorRun {
+				rf.Completable().Fail(ErrShutdown)
 				return &routineTask{
 					f: rf,
 					t: task,
@@ -149,27 +158,29 @@ func (r *routine) pushTask(rf Future, task func()) *routineTask {
 	return rt
 }
 
-func (r *routine) Submit(f func() interface{}) Future {
+func (r *routines) Submit(f func() interface{}) Future {
 	if atomic.LoadInt32(&r.state) != gorRun {
-		return NewCancelledFuture()
+		return NewFailedFuture(ErrShutdown)
 	}
 
 	return r.pushTask(r.buildTask(f, nil)).f
 }
 
-func (r *routine) Execute(f func()) Future {
+func (r *routines) Execute(f func()) Future {
 	if atomic.LoadInt32(&r.state) != gorRun {
-		return NewCancelledFuture()
+		return NewFailedFuture(ErrShutdown)
 	}
 
 	return r.pushTask(r.buildTask(nil, f)).f
 }
 
-func (r *routine) IsShutdown() bool {
+func (r *routines) IsShutdown() bool {
 	return atomic.LoadInt32(&r.state) == gorShutdown
 }
 
-func (r *routine) ShutdownGracefully() {
+// ShutdownGracefully decline all incoming task, wait for all queued tasks done,
+// shutdown all routine then return
+func (r *routines) ShutdownGracefully() {
 	if !atomic.CompareAndSwapInt32(&r.state, gorRun, gorPendingShutdown) {
 		panic(ErrShutdownTwice)
 	}
@@ -192,7 +203,9 @@ func (r *routine) ShutdownGracefully() {
 	atomic.StoreInt32(&r.state, gorShutdown)
 }
 
-func (r *routine) ShutdownImmediately() {
+// ShutdownImmediately decline all incoming task, drop all queued task,
+// shutdown all routine then return
+func (r *routines) ShutdownImmediately() {
 	if !atomic.CompareAndSwapInt32(&r.state, gorRun, gorPendingShutdown) {
 		panic(ErrShutdownTwice)
 	}
@@ -211,20 +224,19 @@ func (r *routine) ShutdownImmediately() {
 	atomic.StoreInt32(&r.state, gorShutdown)
 }
 
-// NewRoutinePool
-// maxQueuedTasks -1 for unlimited
-func NewRoutinePool(nRoutines int, maxQueuedTasks int) RoutineService {
-	r := &routine{
+func newRoutinePool(nRoutines int, maxQueuedTasks int, blocking bool) RoutineService {
+	r := &routines{
+		blocking:        blocking,
 		state:           gorRun,
 		maxRoutines:     nRoutines,
 		standbyRoutines: int32(nRoutines),
 		maxQueuedTasks:  maxQueuedTasks,
-		routineSlots:    map[int]*routineWorker{},
+		routineSlots:    map[int]*routine{},
 	}
 
 	for i := 0; i < nRoutines; i++ {
-		rw := &routineWorker{
-			routine:  r,
+		rw := &routine{
+			rs:       r,
 			n:        i,
 			shutdown: NewFuture(),
 		}
@@ -234,4 +246,18 @@ func NewRoutinePool(nRoutines int, maxQueuedTasks int) RoutineService {
 	}
 
 	return r
+}
+
+// NewRoutinePool create a fix rs pool with limited task queue
+// Submit/Execute will return a FailFuture when task queue is full
+// maxQueuedTasks -1 for unlimited tasks
+func NewRoutinePool(nRoutines int, maxQueuedTasks int) RoutineService {
+	return newRoutinePool(nRoutines, maxQueuedTasks, false)
+}
+
+// NewBlockingRoutinePool create a fix rs pool with limited task queue
+// Submit/Execute will be blocking when task queue is full
+// maxQueuedTasks -1 for unlimited tasks
+func NewBlockingRoutinePool(nRoutines int, maxQueuedTasks int) RoutineService {
+	return newRoutinePool(nRoutines, maxQueuedTasks, true)
 }
