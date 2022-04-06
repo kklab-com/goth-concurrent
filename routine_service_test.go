@@ -11,12 +11,53 @@ import (
 
 func TestRoutineService(t *testing.T) {
 	rs := NewRoutinePool(3, 1)
-	assert.Equal(t, 1, rs.Submit(func() interface{} {
+	f := rs.Submit(func() interface{} {
 		return 1
-	}).Get())
+	})
 
+	f.Await()
+	assert.NotEqual(t, 0, f.RoutineId())
+	assert.Equal(t, 1, f.Get())
 	assert.Nil(t, rs.Execute(func() {}).Get())
 	assert.False(t, rs.IsShutdown())
+	rs.ShutdownGracefully()
+	assert.Panics(t, rs.ShutdownGracefully)
+	assert.Panics(t, rs.ShutdownImmediately)
+	assert.True(t, rs.IsShutdown())
+}
+
+func TestRoutineServiceRoutineId(t *testing.T) {
+	rs := NewRoutinePool(3, 1)
+	f1 := rs.Submit(func() interface{} {
+		time.Sleep(time.Millisecond)
+		return 1
+	})
+
+	f2 := rs.Submit(func() interface{} {
+		time.Sleep(time.Millisecond)
+		return 1
+	})
+
+	f3 := rs.Submit(func() interface{} {
+		time.Sleep(time.Millisecond)
+		return 1
+	})
+
+	f4 := rs.Submit(func() interface{} {
+		time.Sleep(time.Millisecond)
+		return 1
+	})
+
+	f1.Await()
+	f2.Await()
+	f3.Await()
+	f4.Await()
+	assert.NotEqual(t, 0, f1.RoutineId())
+	assert.NotEqual(t, 0, f2.RoutineId())
+	assert.NotEqual(t, 0, f3.RoutineId())
+	assert.NotEqual(t, 0, f4.RoutineId())
+	assert.True(t, (f1.RoutineId() != f2.RoutineId()) && (f2.RoutineId() != f3.RoutineId()))
+	assert.True(t, (f1.RoutineId() == f4.RoutineId()) || (f2.RoutineId() == f4.RoutineId()) || (f3.RoutineId() == f4.RoutineId()))
 	rs.ShutdownGracefully()
 	assert.Panics(t, rs.ShutdownGracefully)
 	assert.Panics(t, rs.ShutdownImmediately)
@@ -109,7 +150,7 @@ func TestRoutineServiceSubmitImmediately(t *testing.T) {
 				})
 			}
 
-			assert.Greater(t, int32(10000), c)
+			assert.GreaterOrEqual(t, int32(10000), c)
 			wg.Done()
 		}()
 	}
@@ -134,7 +175,7 @@ func TestRoutineServiceSubmitImmediately10000(t *testing.T) {
 			}
 
 			rs.ShutdownImmediately()
-			assert.Greater(t, int32(10000), c)
+			assert.GreaterOrEqual(t, int32(10000), c)
 			wg.Done()
 		}()
 	}
@@ -159,7 +200,7 @@ func TestRoutineServiceSubmitImmediatelyUnLimit(t *testing.T) {
 			}
 
 			rs.ShutdownImmediately()
-			assert.Greater(t, int32(10000), c)
+			assert.GreaterOrEqual(t, int32(10000), c)
 			wg.Done()
 		}()
 	}

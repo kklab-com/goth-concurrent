@@ -210,11 +210,14 @@ func TestFutureParallel(t *testing.T) {
 	c := int32(0)
 	wg := sync.WaitGroup{}
 	for i := 0; i < tc; i++ {
-		wg.Add(1)
+		wg.Add(2)
 		f := NewFuture()
-		go f.AddListener(NewFutureListener(func(f Future) {
-			atomic.AddInt32(&c, 1)
-		}))
+		go func(f Future) {
+			f.AddListener(NewFutureListener(func(f Future) {
+				atomic.AddInt32(&c, 1)
+			}))
+			wg.Done()
+		}(f)
 
 		f.Then(func(parent Future) interface{} {
 			time.Sleep(time.Microsecond)
@@ -228,5 +231,5 @@ func TestFutureParallel(t *testing.T) {
 	}
 
 	wg.Wait()
-	assert.Equal(t, int32(tc)*2, c)
+	assert.Equal(t, int32(tc)*2, atomic.LoadInt32(&c))
 }

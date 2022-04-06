@@ -3,7 +3,10 @@ package concurrent
 import (
 	"fmt"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -19,8 +22,8 @@ var ErrTaskQueueFull = fmt.Errorf("task queue is full")
 var ErrShutdown = fmt.Errorf("shutdown")
 
 type RoutineService interface {
-	Submit(func() interface{}) Future
-	Execute(func()) Future
+	Submit(func() interface{}) RoutineFuture
+	Execute(func()) RoutineFuture
 	MaxRoutines() int
 	StandbyRoutines() int
 	MaxTasks() int
@@ -31,6 +34,38 @@ type RoutineService interface {
 	ShutdownImmediately()
 }
 
+type RoutineFuture interface {
+	Future
+	RoutineId() int
+}
+
+type defaultRoutineFuture struct {
+	Future
+	r *routine
+}
+
+func (drf *defaultRoutineFuture) Await() Future {
+	drf.Future.Await()
+	return drf
+}
+
+func (drf *defaultRoutineFuture) AwaitTimeout(timeout time.Duration) Future {
+	drf.Future.AwaitTimeout(timeout)
+	return drf
+}
+func (drf *defaultRoutineFuture) AddListener(listener FutureListener) Future {
+	drf.Future.AddListener(listener)
+	return drf
+}
+
+func (drf *defaultRoutineFuture) RoutineId() int {
+	if drf.r != nil {
+		return drf.r.n
+	}
+
+	return 0
+}
+
 type routine struct {
 	rs       *routines
 	shutdown Future
@@ -38,8 +73,21 @@ type routine struct {
 	n        int
 }
 
+func (r *routine) getGoRoutineId() int {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	idField := strings.Fields(strings.TrimPrefix(string(buf[:n]), "goroutine "))[0]
+	id, err := strconv.Atoi(idField)
+	if err != nil {
+		panic(fmt.Sprintf("cannot get goroutine id: %v", err))
+	}
+
+	return id
+}
+
 func (r *routine) run() {
 	go func(r *routine) {
+		r.n = r.getGoRoutineId()
 		for !r.shutdown.IsDone() {
 			if v := r.rs.tq.Pop(); v == nil {
 				select {
@@ -50,7 +98,7 @@ func (r *routine) run() {
 				rt := v.(*routineTask)
 				r.state = gorRun
 				atomic.AddInt32(&r.rs.standbyRoutines, 1)
-				rt.t()
+				rt.t(r)
 				r.state = gorDone
 				atomic.AddInt32(&r.rs.standbyRoutines, -1)
 				atomic.AddUint64(&r.rs.doneTasks, 1)
@@ -64,8 +112,8 @@ func (r *routine) run() {
 }
 
 type routineTask struct {
-	f Future
-	t func()
+	f RoutineFuture
+	t func(r *routine)
 }
 
 type routines struct {
@@ -79,32 +127,33 @@ type routines struct {
 	routineSlots    map[int]*routine
 }
 
-func (r *routines) MaxRoutines() int {
-	return r.maxRoutines
+func (rs *routines) MaxRoutines() int {
+	return rs.maxRoutines
 }
 
-func (r *routines) StandbyRoutines() int {
-	return int(r.standbyRoutines)
+func (rs *routines) StandbyRoutines() int {
+	return int(rs.standbyRoutines)
 }
 
-func (r *routines) MaxTasks() int {
-	return r.maxQueuedTasks
+func (rs *routines) MaxTasks() int {
+	return rs.maxQueuedTasks
 }
 
-func (r *routines) Tasks() int {
-	return r.tq.Len()
+func (rs *routines) Tasks() int {
+	return rs.tq.Len()
 }
 
-func (r *routines) DoneTasks() uint64 {
-	return r.doneTasks
+func (rs *routines) DoneTasks() uint64 {
+	return rs.doneTasks
 }
 
-func (r *routines) buildTask(submit func() interface{}, execute func()) (Future, func()) {
+func (rs *routines) buildTask(submit func() interface{}, execute func()) (RoutineFuture, func(r *routine)) {
 	sf := submit
 	ef := execute
-	rf := NewFuture()
-	task := func() {
+	rf := &defaultRoutineFuture{Future: NewFuture()}
+	task := func(r *routine) {
 		rf := rf
+		rf.r = r
 		defer func() {
 			if e := recover(); e != nil {
 				if cast, ok := e.(error); ok {
@@ -128,16 +177,16 @@ func (r *routines) buildTask(submit func() interface{}, execute func()) (Future,
 	return rf, task
 }
 
-func (r *routines) pushTask(rf Future, task func()) *routineTask {
-	if r.maxQueuedTasks >= 0 {
-		for r.tq.Len()-int(r.standbyRoutines) > r.maxQueuedTasks {
-			if !r.blocking {
+func (rs *routines) pushTask(rf RoutineFuture, task func(r *routine)) *routineTask {
+	if rs.maxQueuedTasks >= 0 {
+		for rs.tq.Len()-int(rs.standbyRoutines) > rs.maxQueuedTasks {
+			if !rs.blocking {
 				rf.Completable().Fail(ErrTaskQueueFull)
 				return &routineTask{
 					f: rf,
 					t: task,
 				}
-			} else if atomic.LoadInt32(&r.state) != gorRun {
+			} else if atomic.LoadInt32(&rs.state) != gorRun {
 				rf.Completable().Fail(ErrShutdown)
 				return &routineTask{
 					f: rf,
@@ -154,74 +203,74 @@ func (r *routines) pushTask(rf Future, task func()) *routineTask {
 		t: task,
 	}
 
-	r.tq.Push(rt)
+	rs.tq.Push(rt)
 	return rt
 }
 
-func (r *routines) Submit(f func() interface{}) Future {
-	if atomic.LoadInt32(&r.state) != gorRun {
-		return NewFailedFuture(ErrShutdown)
+func (rs *routines) Submit(f func() interface{}) RoutineFuture {
+	if atomic.LoadInt32(&rs.state) != gorRun {
+		return &defaultRoutineFuture{Future: NewFailedFuture(ErrShutdown)}
 	}
 
-	return r.pushTask(r.buildTask(f, nil)).f
+	return rs.pushTask(rs.buildTask(f, nil)).f
 }
 
-func (r *routines) Execute(f func()) Future {
-	if atomic.LoadInt32(&r.state) != gorRun {
-		return NewFailedFuture(ErrShutdown)
+func (rs *routines) Execute(f func()) RoutineFuture {
+	if atomic.LoadInt32(&rs.state) != gorRun {
+		return &defaultRoutineFuture{Future: NewFailedFuture(ErrShutdown)}
 	}
 
-	return r.pushTask(r.buildTask(nil, f)).f
+	return rs.pushTask(rs.buildTask(nil, f)).f
 }
 
-func (r *routines) IsShutdown() bool {
-	return atomic.LoadInt32(&r.state) == gorShutdown
+func (rs *routines) IsShutdown() bool {
+	return atomic.LoadInt32(&rs.state) == gorShutdown
 }
 
 // ShutdownGracefully decline all incoming task, wait for all queued tasks done,
 // shutdown all routine then return
-func (r *routines) ShutdownGracefully() {
-	if !atomic.CompareAndSwapInt32(&r.state, gorRun, gorPendingShutdown) {
+func (rs *routines) ShutdownGracefully() {
+	if !atomic.CompareAndSwapInt32(&rs.state, gorRun, gorPendingShutdown) {
 		panic(ErrShutdownTwice)
 	}
 
-	for r.tq.Len() > 0 {
+	for rs.tq.Len() > 0 {
 		runtime.Gosched()
 	}
 
-	for _, routine := range r.routineSlots {
+	for _, routine := range rs.routineSlots {
 		routine.shutdown.Completable().Complete(nil)
 	}
 
-	r.tq.Close()
-	for _, routine := range r.routineSlots {
+	rs.tq.Close()
+	for _, routine := range rs.routineSlots {
 		for routine.state != gorShutdown {
 			runtime.Gosched()
 		}
 	}
 
-	atomic.StoreInt32(&r.state, gorShutdown)
+	atomic.StoreInt32(&rs.state, gorShutdown)
 }
 
 // ShutdownImmediately decline all incoming task, drop all queued task,
 // shutdown all routine then return
-func (r *routines) ShutdownImmediately() {
-	if !atomic.CompareAndSwapInt32(&r.state, gorRun, gorPendingShutdown) {
+func (rs *routines) ShutdownImmediately() {
+	if !atomic.CompareAndSwapInt32(&rs.state, gorRun, gorPendingShutdown) {
 		panic(ErrShutdownTwice)
 	}
 
-	for _, routine := range r.routineSlots {
+	for _, routine := range rs.routineSlots {
 		routine.shutdown.Completable().Complete(nil)
 	}
 
-	r.tq.Close()
-	for _, routine := range r.routineSlots {
+	rs.tq.Close()
+	for _, routine := range rs.routineSlots {
 		for routine.state != gorShutdown {
 			runtime.Gosched()
 		}
 	}
 
-	atomic.StoreInt32(&r.state, gorShutdown)
+	atomic.StoreInt32(&rs.state, gorShutdown)
 }
 
 func newRoutinePool(nRoutines int, maxQueuedTasks int, blocking bool) RoutineService {
@@ -237,7 +286,6 @@ func newRoutinePool(nRoutines int, maxQueuedTasks int, blocking bool) RoutineSer
 	for i := 0; i < nRoutines; i++ {
 		rw := &routine{
 			rs:       r,
-			n:        i,
 			shutdown: NewFuture(),
 		}
 
