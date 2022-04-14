@@ -60,17 +60,12 @@ func TestQueue1(t *testing.T) {
 }
 
 func TestBlockingQueue(t *testing.T) {
-	q := &BlockingQueue{}
+	q := NewUnlimitedBlockingQueue()
 	q.Push(1)
 	q.Push(2)
 	assert.EqualValues(t, 2, q.Len())
-	assert.EqualValues(t, q.Pop(), 1)
-	assert.EqualValues(t, q.Pop(), 2)
-	assert.EqualValues(t, 0, q.Len())
-	q.Push(1)
-	q.Push(2)
-	assert.EqualValues(t, q.Pop(), 1)
-	q.Reset()
+	assert.EqualValues(t, 1, q.Pop())
+	assert.EqualValues(t, 2, q.Pop())
 	assert.EqualValues(t, 0, q.Len())
 	ts := time.Now()
 	go func() {
@@ -79,45 +74,72 @@ func TestBlockingQueue(t *testing.T) {
 	}()
 
 	assert.NotNil(t, q.Pop())
-	assert.True(t, time.Now().Sub(ts) > time.Millisecond)
+	println(time.Now().Sub(ts))
+	assert.True(t, time.Now().Sub(ts) >= time.Millisecond)
 	assert.EqualValues(t, 0, q.Len())
 }
 
-func TestBlockingQueue1(t *testing.T) {
-	gwg := sync.WaitGroup{}
-	for i := 0; i < 100; i++ {
-		gwg.Add(1)
+func TestBlockingQueue1000(t *testing.T) {
+	bq := NewUnlimitedBlockingQueue()
+	for i := 0; i < 1000; i++ {
+		bq.Push(i)
+	}
+
+	for i := 0; i < 1000; i++ {
+		assert.Equal(t, i, bq.Pop())
+	}
+
+	assert.Equal(t, 0, bq.Len())
+}
+
+func TestBlockingQueueGo1000(t *testing.T) {
+	bq := NewUnlimitedBlockingQueue()
+	wg := WaitGroup{}
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
 		go func() {
-			q := &BlockingQueue{}
-			q.Push(1)
-			ts := time.Now()
-			wg := sync.WaitGroup{}
-			sc := 0
-			for i := 0; i < 100; i++ {
-				wg.Add(1)
-				go func() {
-					ts := time.Now()
-					wg.Done()
-					q.Pop()
-					if time.Now().Sub(ts) < time.Millisecond {
-						sc++
-					}
-				}()
-			}
-
-			wg.Wait()
-			go func() {
-				time.Sleep(time.Millisecond)
-				q.Close()
-			}()
-
-			q.Pop()
-			assert.Equal(t, 1, sc)
-			assert.True(t, time.Now().Sub(ts) > time.Millisecond)
-			assert.EqualValues(t, 0, q.Len())
-			gwg.Done()
+			bq.Push(1)
+			wg.Done()
 		}()
 	}
 
-	gwg.Wait()
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			bq.Pop()
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
+	assert.Equal(t, 0, bq.Len())
+}
+
+func TestBlockingQueueSize(t *testing.T) {
+	bq := NewBlockingQueue(10)
+	for i := 0; i < 10; i++ {
+		bq.Push(1)
+	}
+
+	assert.False(t, bq.TryPush(1))
+	assert.False(t, bq.PushTimeout(1, time.Microsecond))
+	for i := 0; i < 10; i++ {
+		assert.Equal(t, 1, bq.TryPop())
+	}
+
+	assert.Nil(t, bq.TryPop())
+	assert.Nil(t, bq.PopTimeout(time.Microsecond))
+	assert.Zero(t, bq.Len())
+	assert.Equal(t, 10, bq.Cap())
+
+	for i := 0; i < 100; i++ {
+		go bq.Push(1)
+	}
+
+	for i := 0; i < 100; i++ {
+		bq.Pop()
+	}
+
+	assert.Zero(t, bq.Len())
+	assert.Equal(t, 10, bq.Cap())
 }

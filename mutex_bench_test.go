@@ -6,6 +6,25 @@ import (
 	"time"
 )
 
+func BenchmarkMainAtomicMutexFunc(b *testing.B) {
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			m := op{}
+			for i := 0; i < 100; i++ {
+				m.acquire()
+				m.release()
+			}
+
+			m.acquire()
+			go func(m *op) {
+				m.release()
+			}(&m)
+
+			m.release()
+		}
+	})
+}
+
 func BenchmarkMainSMutexFunc(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -25,7 +44,7 @@ func BenchmarkMainSMutexFunc(b *testing.B) {
 	})
 }
 
-func BenchmarkMainCMutexFunc(b *testing.B) {
+func BenchmarkMainGothMutexFunc(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			m := &Mutex{}
@@ -44,7 +63,7 @@ func BenchmarkMainCMutexFunc(b *testing.B) {
 	})
 }
 
-func BenchmarkMainCMutexTFunc(b *testing.B) {
+func BenchmarkMainGothMutexTrtFunc(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			m := &Mutex{}

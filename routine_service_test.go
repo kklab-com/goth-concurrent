@@ -11,14 +11,21 @@ import (
 
 func TestRoutineService(t *testing.T) {
 	rs := NewRoutinePool(3, 1)
-	f := rs.Submit(func() interface{} {
+	assert.Equal(t, 3, rs.StandbyRoutines())
+	wg := WaitGroup{}
+	wg.Add(1)
+	f := rs.Submit(func(r Routine) interface{} {
+		wg.Done()
+		time.Sleep(time.Millisecond)
 		return 1
 	})
 
+	wg.Wait()
+	assert.Equal(t, 2, rs.StandbyRoutines())
 	f.Await()
+	assert.Equal(t, 3, rs.StandbyRoutines())
 	assert.NotEqual(t, 0, f.RoutineId())
 	assert.Equal(t, 1, f.Get())
-	assert.Nil(t, rs.Execute(func() {}).Get())
 	assert.False(t, rs.IsShutdown())
 	rs.ShutdownGracefully()
 	assert.Panics(t, rs.ShutdownGracefully)
@@ -27,23 +34,23 @@ func TestRoutineService(t *testing.T) {
 }
 
 func TestRoutineServiceRoutineId(t *testing.T) {
-	rs := NewRoutinePool(3, 1)
-	f1 := rs.Submit(func() interface{} {
+	rs := NewBlockingRoutinePool(3, 1)
+	f1 := rs.Submit(func(r Routine) interface{} {
 		time.Sleep(time.Millisecond)
 		return 1
 	})
 
-	f2 := rs.Submit(func() interface{} {
+	f2 := rs.Submit(func(r Routine) interface{} {
 		time.Sleep(time.Millisecond)
 		return 1
 	})
 
-	f3 := rs.Submit(func() interface{} {
+	f3 := rs.Submit(func(r Routine) interface{} {
 		time.Sleep(time.Millisecond)
 		return 1
 	})
 
-	f4 := rs.Submit(func() interface{} {
+	f4 := rs.Submit(func(r Routine) interface{} {
 		time.Sleep(time.Millisecond)
 		return 1
 	})
@@ -66,32 +73,33 @@ func TestRoutineServiceRoutineId(t *testing.T) {
 
 func TestRoutineServiceSubmitGracefully(t *testing.T) {
 	tick := 100
+	round := 10000
 	wg := sync.WaitGroup{}
 	for i := 0; i < tick; i++ {
 		wg.Add(1)
 		go func() {
 			rs := NewBlockingRoutinePool(3, 1)
 			c := int32(0)
-			for i := 0; i < 10000; i++ {
-				rs.Submit(func() interface{} {
+			for i := 0; i < round; i++ {
+				rs.Submit(func(r Routine) interface{} {
 					time.Sleep(time.Microsecond)
 					return atomic.AddInt32(&c, 1)
 				})
 			}
 
 			rs.ShutdownGracefully()
-			assert.Equal(t, int64(10000), int64(rs.DoneTasks()))
-			assert.Equal(t, int32(10000), c)
+			assert.Equal(t, int64(round), int64(rs.DoneTasks()))
+			assert.Equal(t, int32(round), c)
 
-			for i := 0; i < 10000; i++ {
-				rs.Submit(func() interface{} {
+			for i := 0; i < round; i++ {
+				rs.Submit(func(r Routine) interface{} {
 					time.Sleep(time.Microsecond)
 					return atomic.AddInt32(&c, 1)
 				})
 			}
 
-			assert.Equal(t, uint64(10000), rs.DoneTasks())
-			assert.Equal(t, int32(10000), c)
+			assert.Equal(t, uint64(round), rs.DoneTasks())
+			assert.Equal(t, int32(round), c)
 			wg.Done()
 		}()
 	}
@@ -106,7 +114,7 @@ func TestRoutineServiceSubmitGracefullyF(t *testing.T) {
 	cc := int32(0)
 	for i := 0; i < tc; i++ {
 		ic := i
-		rs.Submit(func() interface{} {
+		rs.Submit(func(r Routine) interface{} {
 			time.Sleep(time.Microsecond)
 			atomic.AddInt32(&c, int32(ic))
 			return &cc
@@ -120,7 +128,7 @@ func TestRoutineServiceSubmitGracefullyF(t *testing.T) {
 	assert.Equal(t, int32((tc-1)*tc/2), c)
 	assert.Equal(t, int32(tc), cc)
 	for i := 0; i < tc; i++ {
-		rs.Submit(func() interface{} {
+		rs.Submit(func(r Routine) interface{} {
 			return atomic.AddInt32(&c, 1)
 		})
 	}
@@ -144,7 +152,7 @@ func TestRoutineServiceSubmitImmediately(t *testing.T) {
 			}()
 
 			for i := 0; i < 10000; i++ {
-				rs.Submit(func() interface{} {
+				rs.Submit(func(r Routine) interface{} {
 					time.Sleep(time.Microsecond)
 					return atomic.AddInt32(&c, 1)
 				})
@@ -168,7 +176,7 @@ func TestRoutineServiceSubmitImmediately10000(t *testing.T) {
 			c := int32(0)
 
 			for i := 0; i < 10000; i++ {
-				rs.Submit(func() interface{} {
+				rs.Submit(func(r Routine) interface{} {
 					time.Sleep(time.Microsecond)
 					return atomic.AddInt32(&c, 1)
 				})
@@ -193,7 +201,7 @@ func TestRoutineServiceSubmitImmediatelyUnLimit(t *testing.T) {
 			c := int32(0)
 
 			for i := 0; i < 10000; i++ {
-				rs.Submit(func() interface{} {
+				rs.Submit(func(r Routine) interface{} {
 					time.Sleep(time.Microsecond)
 					return atomic.AddInt32(&c, 1)
 				})
