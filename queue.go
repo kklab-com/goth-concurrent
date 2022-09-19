@@ -25,31 +25,31 @@ func (l *List) Back() *list.Element {
 	return l.l.Back()
 }
 
-func (l *List) Remove(e *list.Element) interface{} {
+func (l *List) Remove(e *list.Element) any {
 	l.acquire()
 	defer l.release()
 	return l.l.Remove(e)
 }
 
-func (l *List) PushFront(v interface{}) *list.Element {
+func (l *List) PushFront(v any) *list.Element {
 	l.acquire()
 	defer l.release()
 	return l.l.PushFront(v)
 }
 
-func (l *List) PushBack(v interface{}) *list.Element {
+func (l *List) PushBack(v any) *list.Element {
 	l.acquire()
 	defer l.release()
 	return l.l.PushBack(v)
 }
 
-func (l *List) InsertBefore(v interface{}, mark *list.Element) *list.Element {
+func (l *List) InsertBefore(v any, mark *list.Element) *list.Element {
 	l.acquire()
 	defer l.release()
 	return l.l.InsertBefore(v, mark)
 }
 
-func (l *List) InsertAfter(v interface{}, mark *list.Element) *list.Element {
+func (l *List) InsertAfter(v any, mark *list.Element) *list.Element {
 	l.acquire()
 	defer l.release()
 	return l.l.InsertAfter(v, mark)
@@ -96,7 +96,7 @@ type Queue struct {
 	iq list.List
 }
 
-func (q *Queue) Push(obj interface{}) {
+func (q *Queue) Push(obj any) {
 	if obj == nil {
 		return
 	}
@@ -106,7 +106,7 @@ func (q *Queue) Push(obj interface{}) {
 	q.iq.PushBack(obj)
 }
 
-func (q *Queue) Pop() interface{} {
+func (q *Queue) Pop() any {
 	q.acquire()
 	defer q.release()
 	if v := q.iq.Front(); v != nil {
@@ -144,12 +144,12 @@ func NewBlockingQueue(len int) BlockingQueue {
 }
 
 type BlockingQueue interface {
-	TryPush(obj interface{}) bool
-	PushTimeout(obj interface{}, timeout time.Duration) bool
-	Push(obj interface{})
-	TryPop() interface{}
-	PopTimeout(timeout time.Duration) interface{}
-	Pop() interface{}
+	TryPush(obj any) bool
+	PushTimeout(obj any, timeout time.Duration) bool
+	Push(obj any)
+	TryPop() any
+	PopTimeout(timeout time.Duration) any
+	Pop() any
 	Reset()
 	Len() int
 	Cap() int
@@ -158,7 +158,7 @@ type BlockingQueue interface {
 type blockingQueue struct {
 	iq         list.List
 	tc         sync.Mutex
-	head, tail chan interface{}
+	head, tail chan any
 	c          int
 }
 
@@ -168,9 +168,9 @@ func (q *blockingQueue) isListQueue() bool {
 
 func (q *blockingQueue) preInit() *blockingQueue {
 	if q.isListQueue() {
-		q.head, q.tail = make(chan interface{}, 1), make(chan interface{}, 1)
+		q.head, q.tail = make(chan any, 1), make(chan any, 1)
 	} else {
-		q.head = make(chan interface{}, q.c)
+		q.head = make(chan any, q.c)
 	}
 
 	return q
@@ -191,7 +191,7 @@ func (q *blockingQueue) qPush() {
 	q.tc.Unlock()
 }
 
-func (q *blockingQueue) TryPush(obj interface{}) bool {
+func (q *blockingQueue) TryPush(obj any) bool {
 	if obj == nil {
 		return false
 	}
@@ -214,7 +214,7 @@ func (q *blockingQueue) TryPush(obj interface{}) bool {
 	}
 }
 
-func (q *blockingQueue) PushTimeout(obj interface{}, timeout time.Duration) bool {
+func (q *blockingQueue) PushTimeout(obj any, timeout time.Duration) bool {
 	if obj == nil {
 		return false
 	}
@@ -248,7 +248,7 @@ func (q *blockingQueue) PushTimeout(obj interface{}, timeout time.Duration) bool
 	}
 }
 
-func (q *blockingQueue) Push(obj interface{}) {
+func (q *blockingQueue) Push(obj any) {
 	q.PushTimeout(obj, maxDuration)
 }
 
@@ -266,7 +266,7 @@ func (q *blockingQueue) qPop() {
 	q.tc.Unlock()
 }
 
-func (q *blockingQueue) TryPop() interface{} {
+func (q *blockingQueue) TryPop() any {
 	if q.isListQueue() {
 		select {
 		case v := <-q.head:
@@ -287,7 +287,7 @@ func (q *blockingQueue) TryPop() interface{} {
 
 // PopTimeout
 // return nil for timeout
-func (q *blockingQueue) PopTimeout(timeout time.Duration) interface{} {
+func (q *blockingQueue) PopTimeout(timeout time.Duration) any {
 	if timeout == maxDuration {
 		if q.isListQueue() {
 			defer q.qPop()
@@ -314,7 +314,7 @@ func (q *blockingQueue) PopTimeout(timeout time.Duration) interface{} {
 	}
 }
 
-func (q *blockingQueue) Pop() interface{} {
+func (q *blockingQueue) Pop() any {
 	return q.PopTimeout(maxDuration)
 }
 

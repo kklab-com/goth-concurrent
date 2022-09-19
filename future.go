@@ -17,7 +17,9 @@ const (
 
 type ChainFuture interface {
 	Future
-	Parent() ChainFuture
+	Prev() ChainFuture
+	Then(fn func(prev Future) any) (future ChainFuture)
+	ThenAsync(fn func(prev Future) any) (future ChainFuture)
 }
 
 type Future interface {
@@ -25,14 +27,12 @@ type Future interface {
 	Completable() Completable
 	Immutable() Immutable
 	Chainable() ChainFuture
-	Then(fn func(parent Future) interface{}) (future Future)
-	ThenAsync(fn func(parent Future) interface{}) (future Future)
 }
 
 type Immutable interface {
-	Get() interface{}
-	GetTimeout(timeout time.Duration) interface{}
-	GetNow() interface{}
+	Get() any
+	GetTimeout(timeout time.Duration) any
+	GetNow() any
 	Done() <-chan struct{}
 	Await() Future
 	AwaitTimeout(timeout time.Duration) Future
@@ -45,20 +45,95 @@ type Immutable interface {
 }
 
 type Completable interface {
-	Complete(obj interface{}) bool
+	Complete(obj any) bool
 	Cancel() bool
 	Fail(err error) bool
 }
 
 type Settable interface {
-	Set(obj interface{})
+	Set(obj any)
+}
+
+type CastFuture[T any] interface {
+	Get() (obj T)
+	GetTimeout(timeout time.Duration) (obj T)
+	GetNow() (obj T)
+	Done() <-chan struct{}
+	Await() CastFuture[T]
+	AwaitTimeout(timeout time.Duration) CastFuture[T]
+	IsDone() bool
+	IsSuccess() bool
+	IsCancelled() bool
+	IsFail() bool
+	Error() error
+	AddListener(listener FutureListener) CastFuture[T]
+	Completable() Completable
+	Chainable() ChainFuture
+	BaseFuture() Future
+}
+
+func NewCastFuture[T any]() CastFuture[T] {
+	var an any = &DefaultCastFuture[T]{Future: NewFuture()}
+	return an.(CastFuture[T])
+}
+
+func WrapCastFuture[T any](future Future) CastFuture[T] {
+	var an any = &DefaultCastFuture[T]{Future: future}
+	return an.(CastFuture[T])
+}
+
+type DefaultCastFuture[T any] struct {
+	Future
+}
+
+func (f *DefaultCastFuture[T]) Get() (obj T) {
+	if v := f.Future.Get(); v != nil {
+		obj = v.(T)
+	}
+
+	return
+}
+
+func (f *DefaultCastFuture[T]) GetTimeout(timeout time.Duration) (obj T) {
+	if v := f.Future.GetTimeout(timeout); v != nil {
+		obj = v.(T)
+	}
+
+	return
+}
+
+func (f *DefaultCastFuture[T]) GetNow() (obj T) {
+	if v := f.Future.GetNow(); v != nil {
+		obj = v.(T)
+	}
+
+	return
+}
+
+func (f *DefaultCastFuture[T]) Await() CastFuture[T] {
+	f.BaseFuture().Get()
+	return f
+}
+
+func (f *DefaultCastFuture[T]) AwaitTimeout(timeout time.Duration) CastFuture[T] {
+	f.BaseFuture().GetTimeout(timeout)
+	return f
+}
+
+func (f *DefaultCastFuture[T]) AddListener(listener FutureListener) CastFuture[T] {
+	f.BaseFuture().AddListener(listener)
+	return f
+}
+
+func (f *DefaultCastFuture[T]) BaseFuture() Future {
+	return f.Future
 }
 
 func NewFuture() Future {
 	return newDefaultFuture()
 }
 
-func NewCompletedFuture(obj interface{}) Future {
+func NewCompletedFuture(obj any) Future {
 	f := NewFuture()
 	f.Completable().Complete(obj)
 	return f
@@ -78,18 +153,18 @@ func NewFailedFuture(err error) Future {
 
 func NewChainFuture(future ChainFuture) ChainFuture {
 	f := newDefaultFuture()
-	f.parent = future
+	f.prev = future
 	return f
 }
 
 type DefaultFuture struct {
 	op
 	ch        chan struct{}
-	obj       interface{}
+	obj       any
 	state     int32
 	err       error
 	listeners list.List
-	parent    ChainFuture
+	prev      ChainFuture
 }
 
 func newDefaultFuture() *DefaultFuture {
@@ -98,8 +173,8 @@ func newDefaultFuture() *DefaultFuture {
 	return f
 }
 
-func (f *DefaultFuture) Parent() ChainFuture {
-	return f.parent
+func (f *DefaultFuture) Prev() ChainFuture {
+	return f.prev
 }
 
 func (f *DefaultFuture) self() Future {
@@ -118,6 +193,10 @@ func (f *DefaultFuture) Chainable() ChainFuture {
 	return f.self().(ChainFuture)
 }
 
+func (f *DefaultFuture) Future() Future {
+	return f.self().(Future)
+}
+
 func (f *DefaultFuture) _waitJudge(timeout time.Duration) (done bool) {
 	if timeout == 0 {
 		<-f.ch
@@ -132,11 +211,11 @@ func (f *DefaultFuture) _waitJudge(timeout time.Duration) (done bool) {
 	}
 }
 
-func (f *DefaultFuture) Get() interface{} {
+func (f *DefaultFuture) Get() any {
 	return f.GetTimeout(0)
 }
 
-func (f *DefaultFuture) GetTimeout(timeout time.Duration) interface{} {
+func (f *DefaultFuture) GetTimeout(timeout time.Duration) any {
 	if f.IsDone() {
 		return f.obj
 	}
@@ -148,7 +227,7 @@ func (f *DefaultFuture) GetTimeout(timeout time.Duration) interface{} {
 	return nil
 }
 
-func (f *DefaultFuture) GetNow() interface{} {
+func (f *DefaultFuture) GetNow() any {
 	return f.obj
 }
 
@@ -203,7 +282,7 @@ func (f *DefaultFuture) AddListener(listener FutureListener) Future {
 	return f
 }
 
-func (f *DefaultFuture) Complete(obj interface{}) bool {
+func (f *DefaultFuture) Complete(obj any) bool {
 	f.acquire()
 	defer f.release()
 	if atomic.CompareAndSwapInt32(&f.state, stateWait, stateSuccess) {
@@ -244,7 +323,7 @@ func (f *DefaultFuture) Fail(err error) bool {
 	return false
 }
 
-func (f *DefaultFuture) Set(obj interface{}) {
+func (f *DefaultFuture) Set(obj any) {
 	f.obj = obj
 }
 
@@ -260,7 +339,7 @@ func (f *DefaultFuture) callListener() {
 	}
 }
 
-func (f *DefaultFuture) Then(fn func(parent Future) interface{}) (future Future) {
+func (f *DefaultFuture) Then(fn func(prev Future) any) (future ChainFuture) {
 	cf := f
 	future = NewChainFuture(cf)
 	lfn := fn
@@ -274,7 +353,7 @@ func (f *DefaultFuture) Then(fn func(parent Future) interface{}) (future Future)
 			return
 		}
 
-		var rtn interface{}
+		var rtn any
 		defer func() {
 			if e := recover(); e != nil {
 				if err, ok := e.(error); ok {
@@ -293,7 +372,7 @@ func (f *DefaultFuture) Then(fn func(parent Future) interface{}) (future Future)
 	return future
 }
 
-func (f *DefaultFuture) ThenAsync(fn func(parent Future) interface{}) (future Future) {
+func (f *DefaultFuture) ThenAsync(fn func(prev Future) any) (future ChainFuture) {
 	cf := f
 	future = NewChainFuture(cf)
 	lfn := fn
@@ -307,8 +386,8 @@ func (f *DefaultFuture) ThenAsync(fn func(parent Future) interface{}) (future Fu
 			return
 		}
 
-		go func(cf Future, future Future, lfn func(parent Future) interface{}) {
-			var rtn interface{}
+		go func(cf Future, future Future, lfn func(prev Future) any) {
+			var rtn any
 			defer func() {
 				if e := recover(); e != nil {
 					if err, ok := e.(error); ok {
@@ -350,9 +429,9 @@ func NewFutureListener(f func(f Future)) FutureListener {
 	}
 }
 
-func Do(f func() interface{}) (future Future) {
+func Do(f func() any) (future Future) {
 	future = NewFuture()
-	var rtn interface{}
+	var rtn any
 	defer func() {
 		if e := recover(); e != nil {
 			if err, ok := e.(error); ok {
@@ -369,10 +448,10 @@ func Do(f func() interface{}) (future Future) {
 	return future
 }
 
-func DoAsync(f func() interface{}) (future Future) {
+func DoAsync(f func() any) (future Future) {
 	future = NewFuture()
 	go func() {
-		var rtn interface{}
+		var rtn any
 		defer func() {
 			if e := recover(); e != nil {
 				if err, ok := e.(error); ok {

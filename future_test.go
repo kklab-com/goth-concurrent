@@ -157,12 +157,12 @@ func TestFuture(t *testing.T) {
 		f.Completable().Complete("1")
 	}()
 
-	assert.Equal(t, "3", f.Then(func(parent Future) interface{} {
+	assert.Equal(t, "3", f.Chainable().Then(func(parent Future) any {
 		assert.Equal(t, "1", parent.Get())
 		return "2"
-	}).Then(func(parent Future) interface{} {
+	}).Then(func(parent Future) any {
 		assert.Equal(t, "2", parent.Get())
-		assert.Equal(t, "1", parent.Chainable().Parent().Get())
+		assert.Equal(t, "1", parent.Chainable().Prev().Get())
 		assert.True(t, parent.IsSuccess())
 		return "3"
 	}).Get())
@@ -174,17 +174,17 @@ func TestFuture(t *testing.T) {
 		f.Completable().Complete(nil)
 	}()
 
-	nf := f.ThenAsync(func(parent Future) interface{} {
+	nf := f.Chainable().ThenAsync(func(parent Future) any {
 		return "2"
-	}).ThenAsync(func(parent Future) interface{} {
+	}).ThenAsync(func(parent Future) any {
 		return "3"
 	})
 
 	assert.True(t, time.Now().Sub(ts) < time.Millisecond)
 	nf.Await()
 	assert.Equal(t, "3", nf.Get())
-	assert.Equal(t, "2", nf.Chainable().Parent().Get())
-	assert.Nil(t, nf.Chainable().Parent().Parent().Get())
+	assert.Equal(t, "2", nf.Chainable().Prev().Get())
+	assert.Nil(t, nf.Chainable().Prev().Prev().Get())
 	assert.True(t, time.Now().Sub(ts) > time.Millisecond)
 
 	f = NewFuture()
@@ -193,7 +193,7 @@ func TestFuture(t *testing.T) {
 		f.Completable().Cancel()
 	}()
 
-	assert.True(t, f.Then(func(parent Future) interface{} {
+	assert.True(t, f.Chainable().Then(func(parent Future) any {
 		return nil
 	}).Await().IsCancelled())
 
@@ -205,7 +205,7 @@ func TestFuture(t *testing.T) {
 	assert.Equal(t, "2", f.Get())
 }
 
-func TestFutureParallel(t *testing.T) {
+func TestFuture_Parallel(t *testing.T) {
 	tc := 100000
 	c := int32(0)
 	wg := sync.WaitGroup{}
@@ -219,7 +219,7 @@ func TestFutureParallel(t *testing.T) {
 			wg.Done()
 		}(f)
 
-		f.Then(func(parent Future) interface{} {
+		f.Chainable().Then(func(parent Future) any {
 			time.Sleep(time.Microsecond)
 			return atomic.AddInt32(&c, 1)
 		})
@@ -232,4 +232,52 @@ func TestFutureParallel(t *testing.T) {
 
 	wg.Wait()
 	assert.Equal(t, int32(tc)*2, atomic.LoadInt32(&c))
+}
+
+func TestFuture_NewCastFuture(t *testing.T) {
+	MSG := "NEW"
+	cf := NewCastFuture[string]()
+	assert.Empty(t, cf.GetNow())
+	cf.Completable().Complete(MSG)
+	assert.Equal(t, MSG, cf.Get())
+	assert.Equal(t, MSG, cf.GetNow())
+	assert.Equal(t, MSG, cf.BaseFuture().Get())
+	pcf := NewCastFuture[*string]()
+	assert.Nil(t, pcf.GetNow())
+	pcf.Completable().Complete(&MSG)
+	assert.Equal(t, MSG, *pcf.Get())
+	assert.Equal(t, MSG, *pcf.GetNow())
+}
+
+func TestFuture_WrapCastFuture(t *testing.T) {
+	MSG := "NEW"
+	f := NewFuture()
+	cf := WrapCastFuture[string](f)
+	assert.Empty(t, cf.GetNow())
+	f.Completable().Complete(MSG)
+	assert.Equal(t, MSG, f.Get())
+	assert.Equal(t, MSG, cf.Get())
+	assert.Equal(t, MSG, cf.GetNow())
+	assert.Equal(t, MSG, cf.BaseFuture().Get())
+}
+
+func TestFuture_CastFutureAwait(t *testing.T) {
+	MSG := "NEW"
+	cf := NewCastFuture[string]()
+	done1 := NewFuture()
+	done2 := NewFuture()
+	assert.Empty(t, cf.GetNow())
+	cf.AddListener(NewFutureListener(func(f Future) {
+		if f.Get() == MSG {
+			done1.Completable().Complete(MSG)
+		}
+	}))
+
+	done1.AddListener(NewFutureListener(func(f Future) {
+		done2.Completable().Complete(nil)
+	}))
+
+	cf.Completable().Complete(MSG)
+	assert.True(t, done1.AwaitTimeout(time.Second).IsSuccess())
+	assert.True(t, done2.AwaitTimeout(time.Second).IsSuccess())
 }

@@ -8,7 +8,7 @@ import (
 func BenchmarkMainChanQueue(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			ch := make(chan interface{}, 40)
+			ch := make(chan any, 40)
 			ch <- 1
 			<-ch
 		}
@@ -28,7 +28,7 @@ func BenchmarkMainGothBQueue(b *testing.B) {
 func BenchmarkMainChanQueue60(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			ch := make(chan interface{}, 60)
+			ch := make(chan any, 60)
 			ch <- 1
 			<-ch
 		}

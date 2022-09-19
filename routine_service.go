@@ -21,7 +21,7 @@ var ErrShutdownTwice = fmt.Errorf("shutdown a shutdown rs service")
 var ErrTaskQueueFull = fmt.Errorf("task queue is full")
 var ErrShutdown = fmt.Errorf("shutdown")
 
-type SubmitTask func(r Routine) interface{}
+type SubmitTask func(r Routine) any
 
 type RoutineService interface {
 	Submit(SubmitTask) RoutineFuture
